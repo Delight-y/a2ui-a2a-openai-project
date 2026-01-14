@@ -76,6 +76,19 @@ function applyContents(basePath, contents) {
   }
 }
 
+function formatOptionDetail(o) {
+  if (!o) return "未选择";
+  const lines = [
+    `airline: ${o.airline ?? ""}`,
+    `depart: ${o.depart ?? ""}`,
+    `arrive: ${o.arrive ?? ""}`,
+    `duration: ${o.duration ?? ""}`,
+    `price_cny: ${o.price_cny ?? ""}`,
+    `notes: ${o.notes ?? ""}`,
+  ];
+  return lines.join("\n");
+}
+
 function buildElement(nodeId) {
   const def = state.componentMap.get(nodeId);
   if (!def) {
@@ -149,6 +162,75 @@ function buildElement(nodeId) {
     });
 
     return btn;
+  }
+  // 新增select下拉
+  if (type === "Select") {
+    const wrap = document.createElement("div");
+    const label = document.createElement("div");
+    label.className = "muted";
+    label.textContent = resolveText(payload.label) || "Select";
+    const select = document.createElement("select");
+
+    const itemsPath = payload.options?.path;
+    const selectedIndexPath = payload.selectedIndex?.path;
+    const items = Array.isArray(getPath(state.dataModel, itemsPath))
+      ? getPath(state.dataModel, itemsPath)
+      : [];
+    // 当前选中值
+    const selectedIndexRaw = getPath(state.dataModel, selectedIndexPath);
+    const selectedIndex =
+      typeof selectedIndexRaw === "number" ? selectedIndexRaw : -1;
+    select.innerHTML = "";
+    if (!items.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "(无选项)";
+      select.appendChild(option);
+      select.disabled = true;
+      select.value = "-1";
+    } else {
+      select.disabled = false;
+      items.forEach((item, index) => {
+        const option = document.createElement("option");
+        option.value = String(index);
+        option.textContent = formatOptionDetail(item);
+        select.appendChild(option);
+      });
+      const safeIndex =
+        selectedIndex >= 0 && selectedIndex < items.length ? selectedIndex : 0;
+      select.value = String(safeIndex);
+
+      if (selectedIndexPath) {
+        setPath(state.dataModel, selectedIndexPath, safeIndex);
+      } else {
+        setPath(
+          state.dataModel,
+          "/flights/selected_detail_text",
+          formatOptionDetail(items[safeIndex])
+        );
+      }
+    }
+    select.addEventListener("change", () => {
+      const idx = Number(select.value);
+      if (!Number.isFinite(idx)) return;
+
+      if (selectedIndexPath) setPath(state.dataModel, selectedIndexPath, idx);
+
+      const curItems = Array.isArray(getPath(state.dataModel, itemsPath))
+        ? getPath(state.dataModel, itemsPath)
+        : [];
+      const chosen = idx >= 0 && idx < curItems.length ? curItems[idx] : null;
+      // 更新详情卡片绑定字段（无需请求后端）
+      setPath(
+        state.dataModel,
+        "/flights/selected_detail_text",
+        formatOptionDetail(chosen)
+      );
+      render(); // 立即刷新详情卡
+    });
+    wrap.appendChild(label);
+    wrap.appendChild(select);
+    return wrap;
   }
 
   if (type === "Card") {

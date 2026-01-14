@@ -197,7 +197,13 @@ function sendInitialUI(surfaceId, res) {
           id: "resultArea",
           component: {
             Column: {
-              children: { explicitList: ["weatherCard", "flightCard"] },
+              children: {
+                explicitList: [
+                  "weatherCard",
+                  "flightSelect",
+                  "flightDetailCard",
+                ],
+              },
             },
           },
         },
@@ -210,28 +216,30 @@ function sendInitialUI(surfaceId, res) {
             },
           },
         },
+        // 新增下拉选择器
         {
-          id: "flightCard",
+          id: "flightSelect",
+          component: {
+            Select: {
+              label: { literalString: "机票" },
+              options: { path: "/flights/options" },
+              selectedIndex: { path: "/flights/selectedIndex" },
+            },
+          },
+        },
+        // 新增选中机票详情卡片组件
+        {
+          id: "flightDetailCard",
           component: {
             Card: {
-              title: { literalString: "机票" },
-              body: { path: "/flights/options_text" },
+              title: { literalString: "机票详情" },
+              body: { path: "/flights/selected_detail_text" },
             },
           },
         },
       ],
     },
   });
-
-  // 2) Init data model (only v0.8-like: path + contents)
-  sseSend(res, {
-    dataModelUpdate: {
-      surfaceId,
-      path: "/form",
-      contents: [{ key: "query", valueString: "" }],
-    },
-  });
-
   sseSend(res, {
     dataModelUpdate: {
       surfaceId,
@@ -244,7 +252,11 @@ function sendInitialUI(surfaceId, res) {
     dataModelUpdate: {
       surfaceId,
       path: "/flights",
-      contents: [{ key: "options_text", valueString: "（等待查询）" }],
+      contents: [
+        { key: "options", valueJson: [] },
+        { key: "selectedIndex", valueNumber: null },
+        { key: "selected_detail_text", valueString: "(未选择)" },
+      ],
     },
   });
 
@@ -307,6 +319,18 @@ function normalizeFlightOptions(rawOptions) {
   return out;
 }
 
+function formatOptionDetail(o) {
+  if (!o) return "未选择";
+  const lines = [
+    `airline: ${o.airline ?? ""}`,
+    `depart: ${o.depart ?? ""}`,
+    `arrive: ${o.arrive ?? ""}`,
+    `duration: ${o.duration ?? ""}`,
+    `price_cny: ${o.price_cny ?? ""}`,
+    `notes: ${o.notes ?? ""}`,
+  ];
+  return lines.join("\n");
+}
 function sendResultUI(surfaceId, res, weatherArtifact, flightArtifact) {
   // ===== 1) /weather =====
   const w = weatherArtifact?.data ?? {};
@@ -369,6 +393,9 @@ function sendResultUI(surfaceId, res, weatherArtifact, flightArtifact) {
         })
         .join("\n")
     : "（暂无选项）";
+  const options = Array.isArray(f.options) ? f.options : [];
+  const selectedIndex = options.length ? 0 : -1;
+  const selected = selectedIndex >= 0 ? options[selectedIndex] : null;
 
   sseSend(res, {
     dataModelUpdate: {
@@ -382,7 +409,12 @@ function sendResultUI(surfaceId, res, weatherArtifact, flightArtifact) {
         // 原始 options 仍写入（后面要做 List/Repeat 会用到）
         {
           key: "options",
-          valueJson: Array.isArray(f.options) ? f.options : [],
+          valueJson: options,
+        },
+        { key: "selectedIndex", valueNumber: selectedIndex },
+        {
+          key: "selected_detail_text",
+          valueString: formatOptionDetail(selected),
         },
 
         // 当前 UI 直接绑定的字段（已经清洗过）
@@ -448,7 +480,11 @@ app.post("/ui/event", async (req, res) => {
     dataModelUpdate: {
       surfaceId,
       path: "/flights",
-      contents: [{ key: "options_text", valueString: "查询中..." }],
+      contents: [
+        { key: "options", valueJson: [] },
+        { key: "selectedIndex", valueNumber: -1 },
+        { key: "selected_detail_text", valueString: "查询中..." },
+      ],
     },
   });
 
