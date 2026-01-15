@@ -35,15 +35,12 @@ function getPath(obj, path) {
 /**
  * 严格 v0.8-like：
  * - 只支持 literalString 或 path 引用
- * - 不支持 literal / valueString 等混用字段
  */
 function resolveText(ref) {
   if (!ref) return "";
   if (typeof ref === "string") return ref;
-
   if (ref.literalString != null) return String(ref.literalString);
   if (ref.path) return String(getPath(state.dataModel, ref.path) ?? "");
-
   return "";
 }
 
@@ -76,6 +73,15 @@ function applyContents(basePath, contents) {
   }
 }
 
+function formatOptionLabel(o) {
+  if (!o) return "N/A";
+  const airline = o.airline ?? "N/A";
+  const depart = o.depart ?? "N/A";
+  const arrive = o.arrive ?? "N/A";
+  const price = o.price_cny != null ? `¥${o.price_cny}` : "¥-";
+  return `${airline} ${depart}-${arrive} ${price}`.trim();
+}
+
 function formatOptionDetail(o) {
   if (!o) return "未选择";
   const lines = [
@@ -88,6 +94,20 @@ function formatOptionDetail(o) {
     `image_url: ${o.image_url ?? ""}`,
   ];
   return lines.join("\n");
+}
+
+function syncFlightSelection(items, idx) {
+  const chosen = idx >= 0 && idx < items.length ? items[idx] : null;
+  setPath(
+    state.dataModel,
+    "/flights/selected_detail_text",
+    formatOptionDetail(chosen)
+  );
+  setPath(
+    state.dataModel,
+    "/flights/selected_detail_image",
+    chosen?.image_url || ""
+  );
 }
 
 function buildElement(nodeId) {
@@ -164,59 +184,62 @@ function buildElement(nodeId) {
 
     return btn;
   }
-  // 新增select下拉
+
+  // ✅ Select：严格按后端 schema：items + selectedIndex
   if (type === "Select") {
     const wrap = document.createElement("div");
+
     const label = document.createElement("div");
     label.className = "muted";
     label.textContent = resolveText(payload.label) || "Select";
+
     const select = document.createElement("select");
 
-    const itemsPath = payload.options?.path;
+    const itemsPath = payload.options?.path; // ✅ 修复：items，不是 options
     const selectedIndexPath = payload.selectedIndex?.path;
+
     const items = Array.isArray(getPath(state.dataModel, itemsPath))
       ? getPath(state.dataModel, itemsPath)
       : [];
-    // 当前选中值
+
     const selectedIndexRaw = getPath(state.dataModel, selectedIndexPath);
     const selectedIndex =
       typeof selectedIndexRaw === "number" ? selectedIndexRaw : -1;
+
     select.innerHTML = "";
+
     if (!items.length) {
-      const option = document.createElement("option");
-      option.value = "";
-      option.textContent = "(无选项)";
-      select.appendChild(option);
+      const opt = document.createElement("option");
+      opt.value = "-1";
+      opt.textContent = "（暂无航班）";
+      select.appendChild(opt);
       select.disabled = true;
-      select.value = "-1";
+
+      // 同步详情清空
+      syncFlightSelection([], -1);
     } else {
       select.disabled = false;
+
       items.forEach((item, index) => {
-        const option = document.createElement("option");
-        option.value = String(index);
-        option.textContent = formatOptionDetail(item);
-        select.appendChild(option);
+        const opt = document.createElement("option");
+        opt.value = String(index);
+        opt.textContent = formatOptionLabel(item); // ✅ 用短 label
+        select.appendChild(opt);
       });
+
       const safeIndex =
         selectedIndex >= 0 && selectedIndex < items.length ? selectedIndex : 0;
+
+      // 写回 selectedIndex
+      if (selectedIndexPath)
+        setPath(state.dataModel, selectedIndexPath, safeIndex);
+
       select.value = String(safeIndex);
 
-      if (selectedIndexPath) {
-        setPath(state.dataModel, selectedIndexPath, safeIndex);
-      } else {
-        const chosen = items[safeIndex];
-        setPath(
-          state.dataModel,
-          "/flights/selected_detail_image",
-          chosen?.image_url || ""
-        );
-        setPath(
-          state.dataModel,
-          "/flights/selected_detail_text",
-          formatOptionDetail(chosen)
-        );
-      }
+      // ✅ 无论有没有 selectedIndexPath，都同步 detail text/image
+      syncFlightSelection(items, safeIndex);
     }
+
     select.addEventListener("change", () => {
       const idx = Number(select.value);
       if (!Number.isFinite(idx)) return;
@@ -226,36 +249,39 @@ function buildElement(nodeId) {
       const curItems = Array.isArray(getPath(state.dataModel, itemsPath))
         ? getPath(state.dataModel, itemsPath)
         : [];
-      const chosen = idx >= 0 && idx < curItems.length ? curItems[idx] : null;
-      // 更新详情卡片绑定字段（无需请求后端）
-      setPath(
-        state.dataModel,
-        "/flights/selected_detail_text",
-        formatOptionDetail(chosen)
-      );
-      setPath(
-        state.dataModel,
-        "/flights/selected_detail_image",
-        chosen?.image_url || ""
-      );
-      render(); // 立即刷新详情卡
+
+      syncFlightSelection(curItems, idx);
+      render();
     });
+
     wrap.appendChild(label);
     wrap.appendChild(select);
     return wrap;
   }
+
   if (type === "Image") {
     const wrap = document.createElement("div");
+
     const img = document.createElement("img");
     const src = resolveText(payload.src) || "";
     const alt = resolveText(payload.alt) || "";
+
     img.src = String(src);
     img.alt = String(alt);
-    img.width = Number(payload.width);
-    img.height = Number(payload.height);
+
+    // ✅ 只在有效时设置宽高
+    if (Number.isFinite(Number(payload.width)))
+      img.width = Number(payload.width);
+    if (Number.isFinite(Number(payload.height)))
+      img.height = Number(payload.height);
+
+    // 可选：没图时隐藏破图标
+    if (!src) img.style.display = "none";
+
     wrap.appendChild(img);
     return wrap;
   }
+
   if (type === "Card") {
     const card = document.createElement("div");
     card.className = "card";
@@ -307,7 +333,7 @@ es.onmessage = (evt) => {
   } catch {
     return;
   }
-  // 处理surfaceUpdate 更新componentMap
+
   if (msg.surfaceUpdate) {
     const comps = msg.surfaceUpdate.components || [];
     for (const c of comps) {
@@ -318,9 +344,7 @@ es.onmessage = (evt) => {
     }
   }
 
-  // 处理dataModelUpdate 更新dataModel
   if (msg.dataModelUpdate) {
-    // 严格：只接受 path + contents
     const basePath = msg.dataModelUpdate.path;
     const contents = msg.dataModelUpdate.contents;
     if (typeof basePath === "string" && Array.isArray(contents)) {
@@ -331,7 +355,6 @@ es.onmessage = (evt) => {
   }
 
   if (msg.beginRendering) {
-    // 严格：只接受 beginRendering.root
     const root = msg.beginRendering.root;
     if (typeof root === "string" && root) {
       state.rootId = root;
