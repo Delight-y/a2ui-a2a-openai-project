@@ -201,7 +201,7 @@ function sendInitialUI(surfaceId, res) {
                 explicitList: [
                   "weatherCard",
                   "flightSelect",
-                  "flightDetailCard",
+                  "flightDetailArea",
                 ],
               },
             },
@@ -227,6 +227,17 @@ function sendInitialUI(surfaceId, res) {
             },
           },
         },
+        // 新增选中机票详情区域组件
+        {
+          id: "flightDetailArea",
+          component: {
+            Column: {
+              children: {
+                explicitList: ["flightDetailCard", "flightDetailImage"],
+              },
+            },
+          },
+        },
         // 新增选中机票详情卡片组件
         {
           id: "flightDetailCard",
@@ -234,6 +245,18 @@ function sendInitialUI(surfaceId, res) {
             Card: {
               title: { literalString: "机票详情" },
               body: { path: "/flights/selected_detail_text" },
+            },
+          },
+        },
+        // 新增选中机票详情图片组件
+        {
+          id: "flightDetailImage",
+          component: {
+            Image: {
+              src: { path: "/flights/selected_detail_image" },
+              alt: { literalString: "机票详情图片" },
+              width: 320,
+              height: 180,
             },
           },
         },
@@ -255,6 +278,7 @@ function sendInitialUI(surfaceId, res) {
       contents: [
         { key: "options", valueJson: [] },
         { key: "selectedIndex", valueNumber: null },
+        { key: "selected_detail_image", valueString: "" },
         { key: "selected_detail_text", valueString: "(未选择)" },
       ],
     },
@@ -298,6 +322,7 @@ function normalizeFlightOptions(rawOptions) {
     const depart = String(o.depart ?? o.departTime ?? "").trim();
     const arrive = String(o.arrive ?? o.arriveTime ?? "").trim();
     const notes = cleanNote(o.notes ?? o.note ?? "");
+    const image_url = String(o.image_url ?? o.logo_url ?? "").trim();
 
     // price 允许 number 或字符串数字
     let price = o.price_cny ?? o.price ?? o.priceCny;
@@ -305,7 +330,15 @@ function normalizeFlightOptions(rawOptions) {
     const priceNum = price != null && price !== "" ? Number(price) : null;
 
     // 如果关键信息全空，就跳过，避免拼出 N/A N/A-N/A
-    if (!airline && !depart && !arrive && priceNum == null && !notes) continue;
+    if (
+      !airline &&
+      !depart &&
+      !arrive &&
+      priceNum == null &&
+      !notes &&
+      !image_url
+    )
+      continue;
 
     out.push({
       airline,
@@ -313,6 +346,7 @@ function normalizeFlightOptions(rawOptions) {
       arrive,
       priceNum,
       notes,
+      image_url,
     });
   }
 
@@ -328,6 +362,7 @@ function formatOptionDetail(o) {
     `duration: ${o.duration ?? ""}`,
     `price_cny: ${o.price_cny ?? ""}`,
     `notes: ${o.notes ?? ""}`,
+    `image_url: ${o.image_url ?? ""}`,
   ];
   return lines.join("\n");
 }
@@ -379,6 +414,7 @@ function sendResultUI(surfaceId, res, weatherArtifact, flightArtifact) {
   // ===== 2) /flights =====
   const f = flightArtifact?.data ?? {};
   const normalized = normalizeFlightOptions(f.options);
+  console.log("🚀 ~ sendResultUI ~ normalized:", normalized);
 
   const optionsText = normalized.length
     ? normalized
@@ -396,7 +432,8 @@ function sendResultUI(surfaceId, res, weatherArtifact, flightArtifact) {
   const options = Array.isArray(f.options) ? f.options : [];
   const selectedIndex = options.length ? 0 : -1;
   const selected = selectedIndex >= 0 ? options[selectedIndex] : null;
-
+  console.log("🚀 ~ sendResultUI ~ selected:", selected);
+  const img = selected?.image_url || selected?.logo_url || ""; // 没有就空字符串
   sseSend(res, {
     dataModelUpdate: {
       surfaceId,
@@ -415,6 +452,10 @@ function sendResultUI(surfaceId, res, weatherArtifact, flightArtifact) {
         {
           key: "selected_detail_text",
           valueString: formatOptionDetail(selected),
+        },
+        {
+          key: "selected_detail_image",
+          valueString: String(img),
         },
 
         // 当前 UI 直接绑定的字段（已经清洗过）
@@ -483,6 +524,7 @@ app.post("/ui/event", async (req, res) => {
       contents: [
         { key: "options", valueJson: [] },
         { key: "selectedIndex", valueNumber: -1 },
+        { key: "selected_detail_image", valueString: "" },
         { key: "selected_detail_text", valueString: "查询中..." },
       ],
     },

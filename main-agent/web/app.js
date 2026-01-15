@@ -85,6 +85,7 @@ function formatOptionDetail(o) {
     `duration: ${o.duration ?? ""}`,
     `price_cny: ${o.price_cny ?? ""}`,
     `notes: ${o.notes ?? ""}`,
+    `image_url: ${o.image_url ?? ""}`,
   ];
   return lines.join("\n");
 }
@@ -203,10 +204,16 @@ function buildElement(nodeId) {
       if (selectedIndexPath) {
         setPath(state.dataModel, selectedIndexPath, safeIndex);
       } else {
+        const chosen = items[safeIndex];
+        setPath(
+          state.dataModel,
+          "/flights/selected_detail_image",
+          chosen?.image_url || ""
+        );
         setPath(
           state.dataModel,
           "/flights/selected_detail_text",
-          formatOptionDetail(items[safeIndex])
+          formatOptionDetail(chosen)
         );
       }
     }
@@ -226,13 +233,29 @@ function buildElement(nodeId) {
         "/flights/selected_detail_text",
         formatOptionDetail(chosen)
       );
+      setPath(
+        state.dataModel,
+        "/flights/selected_detail_image",
+        chosen?.image_url || ""
+      );
       render(); // 立即刷新详情卡
     });
     wrap.appendChild(label);
     wrap.appendChild(select);
     return wrap;
   }
-
+  if (type === "Image") {
+    const wrap = document.createElement("div");
+    const img = document.createElement("img");
+    const src = resolveText(payload.src) || "";
+    const alt = resolveText(payload.alt) || "";
+    img.src = String(src);
+    img.alt = String(alt);
+    img.width = Number(payload.width);
+    img.height = Number(payload.height);
+    wrap.appendChild(img);
+    return wrap;
+  }
   if (type === "Card") {
     const card = document.createElement("div");
     card.className = "card";

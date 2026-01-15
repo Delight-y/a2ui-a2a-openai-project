@@ -47,7 +47,7 @@ app.post("/tasks/sendSubscribe", async (req, res) => {
         {
           role: "system",
           content:
-            "你是机票子Agent（当前无真实航司数据）。请输出严格JSON，不要多余文本。字段: from, to, date, options(数组, 每项含 id, airline, depart, arrive, duration, price_cny, notes)。返回3条options。",
+            "你是机票子Agent（当前无真实航司数据）。请输出严格JSON，不要多余文本。字段: from, to, date, options(数组, 每项含 id, airline, depart, arrive, duration, price_cny, notes, image_url)。返回5条options。",
         },
         { role: "user", content: prompt },
       ],
@@ -71,6 +71,7 @@ app.post("/tasks/sendSubscribe", async (req, res) => {
             duration: "N/A",
             price_cny: null,
             notes: raw.slice(0, 140),
+            image_url: "",
           },
         ],
       };
