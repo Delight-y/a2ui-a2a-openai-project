@@ -1,0 +1,108 @@
+{
+  "surfaceId": "main",
+  "components": [
+    {
+      "id": "root",
+      "component": {
+        "Column": {
+          "children": {
+            "explicitList": ["title", "input", "submitBtn", "resultArea"]
+          }
+        }
+      }
+    },
+    {
+      "id": "title",
+      "component": {
+        "Text": {
+          "text": { "literalString": "A2A + A2UI(v0.8-like) Demo" },
+          "usageHint": "h2"
+        }
+      }
+    },
+    {
+      "id": "input",
+      "component": {
+        "TextField": {
+          "label": { "literalString": "输入需求（天气/机票）" },
+          "text": { "path": "/form/query" }
+        }
+      }
+    },
+    {
+      "id": "submitBtn",
+      "component": {
+        "Button": {
+          "child": "submitText",
+          "action": {
+            "name": "submit",
+            "context": [{ "key": "query", "value": { "path": "/form/query" } }]
+          }
+        }
+      }
+    },
+    {
+      "id": "submitText",
+      "component": { "Text": { "text": { "literalString": "提交" } } }
+    },
+    {
+      "id": "resultArea",
+      "component": {
+        "Column": {
+          "children": {
+            "explicitList": ["weatherCard", "flightSelect", "flightDetailArea"]
+          }
+        }
+      }
+    },
+    {
+      "id": "weatherCard",
+      "component": {
+        "Card": {
+          "title": { "literalString": "天气" },
+          "body": { "path": "/weather/temp_text" }
+        }
+      }
+    },
+    {
+      "id": "flightSelect",
+      "component": {
+        "Select": {
+          "label": { "literalString": "机票" },
+          "options": { "path": "/flights/options" },
+          "selectedIndex": { "path": "/flights/selectedIndex" }
+        }
+      }
+    },
+    {
+      "id": "flightDetailArea",
+      "component": {
+        "Column": {
+          "children": {
+            "explicitList": ["flightDetailCard", "flightDetailImage"]
+          }
+        }
+      }
+    },
+    {
+      "id": "flightDetailCard",
+      "component": {
+        "Card": {
+          "title": { "literalString": "机票详情" },
+          "body": { "path": "/flights/selected_detail_text" }
+        }
+      }
+    },
+    {
+      "id": "flightDetailImage",
+      "component": {
+        "Image": {
+          "src": { "path": "/flights/selected_detail_image" },
+          "alt": { "literalString": "机票详情图片" },
+          "width": 320,
+          "height": 180
+        }
+      }
+    }
+  ]
+}

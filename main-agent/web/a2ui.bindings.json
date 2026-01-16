@@ -1,0 +1,14 @@
+{
+  "root": "root",
+  "weather": {
+    "tempText": "/weather/temp_text",
+    "precipText": "/weather/precip_text"
+  },
+  "flights": {
+    "options": "/flights/options",
+    "selectedIndex": "/flights/selectedIndex",
+    "detailText": "/flights/selected_detail_text",
+    "detailImage": "/flights/selected_detail_image",
+    "optionsText": "/flights/options_text"
+  }
+}

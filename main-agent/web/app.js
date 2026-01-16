@@ -326,14 +326,7 @@ const es = new EventSource(
   `/ui/stream?surfaceId=${encodeURIComponent(surfaceId)}`
 );
 
-es.onmessage = (evt) => {
-  let msg;
-  try {
-    msg = JSON.parse(evt.data);
-  } catch {
-    return;
-  }
-
+const handleA2uiMessage = (msg) => {
   if (msg.surfaceUpdate) {
     const comps = msg.surfaceUpdate.components || [];
     for (const c of comps) {
@@ -353,7 +346,6 @@ es.onmessage = (evt) => {
       console.warn("Ignored non-v0.8 dataModelUpdate:", msg.dataModelUpdate);
     }
   }
-
   if (msg.beginRendering) {
     const root = msg.beginRendering.root;
     if (typeof root === "string" && root) {
@@ -363,8 +355,16 @@ es.onmessage = (evt) => {
     }
     console.warn("Ignored non-v0.8 beginRendering:", msg.beginRendering);
   }
-
   if (msg.surfaceUpdate || msg.dataModelUpdate) render();
+};
+es.onmessage = (evt) => {
+  let msg;
+  try {
+    msg = JSON.parse(evt.data);
+  } catch {
+    return;
+  }
+  handleA2uiMessage(msg);
 };
 
 es.onerror = (e) => {

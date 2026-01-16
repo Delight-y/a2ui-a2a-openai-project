@@ -1,7 +1,9 @@
 import express from "express";
 import dotenv from "dotenv";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
+import { extractInitFromCatalog, buildInitUpdates } from "./a2ui_init.js";
 
 dotenv.config();
 
@@ -18,7 +20,7 @@ const WEATHER_AGENT_URL =
 const FLIGHT_AGENT_URL =
   process.env.FLIGHT_AGENT_URL || "http://localhost:3002";
 
-// ====== 单 surface / 单连接（demo 简化）======
+// ====== demo 简化：单 surface / 单连接 ======
 const sseBySurface = new Map(); // surfaceId -> { res, pingTimer }
 const agentCardCache = new Map(); // baseUrl -> card json
 
@@ -34,25 +36,64 @@ function setSseHeaders(res) {
   res.write(":\n\n");
 }
 
-// ====== 文本清洗：去 code fence，压成单行，避免 ```json 等污染 UI ======
+// ====== 纯 v0.8-like：用 fullPath 写入 dataModelUpdate(path+contents) ======
+function splitPath(fullPath) {
+  const parts = String(fullPath || "")
+    .split("/")
+    .filter(Boolean);
+  if (!parts.length) return null;
+  const key = parts[parts.length - 1];
+  const base = "/" + parts.slice(0, -1).join("/");
+  return { base: base === "" ? "/" : base, key };
+}
+
+function dmWrite(surfaceId, res, fullPath, value) {
+  const sp = splitPath(fullPath);
+  if (!sp) return;
+
+  const contentsItem = { key: sp.key };
+
+  if (value == null) contentsItem.valueString = "";
+  else if (typeof value === "string") contentsItem.valueString = value;
+  else if (typeof value === "number") contentsItem.valueNumber = value;
+  else if (typeof value === "boolean") contentsItem.valueBool = value;
+  else contentsItem.valueJson = value;
+
+  sseSend(res, {
+    dataModelUpdate: {
+      surfaceId,
+      path: sp.base,
+      contents: [contentsItem],
+    },
+  });
+}
+
+function dmWriteMany(surfaceId, res, basePath, kvList) {
+  // kvList: [{key, valueString/valueNumber/valueBool/valueJson}]
+  sseSend(res, {
+    dataModelUpdate: {
+      surfaceId,
+      path: basePath,
+      contents: kvList,
+    },
+  });
+}
+
+// ====== 文本清洗：避免子 agent 返回 markdown/code fence 污染 UI ======
 function stripCodeFences(s) {
   if (typeof s !== "string") return "";
-  // 去掉 ```xxx 与 ``` 包裹
   return s
     .replace(/```[a-zA-Z0-9_-]*\n?/g, "")
     .replace(/```/g, "")
     .trim();
 }
-
 function toOneLine(s) {
   if (typeof s !== "string") return "";
   return s.replace(/\s+/g, " ").trim();
 }
-
 function cleanNote(s) {
   return toOneLine(stripCodeFences(String(s ?? "")));
 }
-
 function safeJson(v) {
   try {
     return JSON.stringify(v, null, 2);
@@ -73,7 +114,6 @@ async function fetchAgentCard(baseUrl) {
 }
 
 // ====== A2A-like: sendSubscribe via SSE, read until {type:"final"} ======
-// 增加超时，避免子 agent 卡死导致 main-agent 永远等待
 async function sendSubscribe(baseUrl, input, timeoutMs = 20000) {
   const card = await fetchAgentCard(baseUrl);
   const endpoint = card?.endpoints?.sendSubscribe;
@@ -102,14 +142,12 @@ async function sendSubscribe(baseUrl, input, timeoutMs = 20000) {
       if (done) break;
       buf += decoder.decode(value, { stream: true });
 
-      // SSE events separated by \n\n; we only parse "data: ..."
       let idx;
       while ((idx = buf.indexOf("\n\n")) >= 0) {
         const event = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
 
-        const lines = event.split("\n");
-        for (const line of lines) {
+        for (const line of event.split("\n")) {
           const trimmed = line.trim();
           if (!trimmed.startsWith("data:")) continue;
           const jsonStr = trimmed.slice(5).trim();
@@ -132,7 +170,6 @@ async function sendSubscribe(baseUrl, input, timeoutMs = 20000) {
 
     throw new Error("SSE stream ended without final message");
   } catch (e) {
-    // AbortError -> timeout
     if (String(e?.name) === "AbortError") {
       throw new Error(`sendSubscribe timeout after ${timeoutMs}ms: ${baseUrl}`);
     }
@@ -142,167 +179,45 @@ async function sendSubscribe(baseUrl, input, timeoutMs = 20000) {
   }
 }
 
-// ====== A2UI (v0.8-like) ======
-function sendInitialUI(surfaceId, res) {
-  // 1) UI Catalog
-  sseSend(res, {
-    surfaceUpdate: {
-      surfaceId,
-      components: [
-        {
-          id: "root",
-          component: {
-            Column: {
-              children: {
-                explicitList: ["title", "input", "submitBtn", "resultArea"],
-              },
-            },
-          },
-        },
-        {
-          id: "title",
-          component: {
-            Text: {
-              text: { literalString: "A2A + A2UI(v0.8-like) Demo" },
-              usageHint: "h2",
-            },
-          },
-        },
-        {
-          id: "input",
-          component: {
-            TextField: {
-              label: { literalString: "输入需求（天气/机票）" },
-              text: { path: "/form/query" },
-            },
-          },
-        },
-        {
-          id: "submitBtn",
-          component: {
-            Button: {
-              child: "submitText",
-              action: {
-                name: "submit",
-                context: [{ key: "query", value: { path: "/form/query" } }],
-              },
-            },
-          },
-        },
-        {
-          id: "submitText",
-          component: { Text: { text: { literalString: "提交" } } },
-        },
-        {
-          id: "resultArea",
-          component: {
-            Column: {
-              children: {
-                explicitList: [
-                  "weatherCard",
-                  "flightSelect",
-                  "flightDetailArea",
-                ],
-              },
-            },
-          },
-        },
-        {
-          id: "weatherCard",
-          component: {
-            Card: {
-              title: { literalString: "天气" },
-              body: { path: "/weather/temp_text" },
-            },
-          },
-        },
-        // 新增下拉选择器
-        {
-          id: "flightSelect",
-          component: {
-            Select: {
-              label: { literalString: "机票" },
-              options: { path: "/flights/options" },
-              selectedIndex: { path: "/flights/selectedIndex" },
-            },
-          },
-        },
-        // 新增选中机票详情区域组件
-        {
-          id: "flightDetailArea",
-          component: {
-            Column: {
-              children: {
-                explicitList: ["flightDetailCard", "flightDetailImage"],
-              },
-            },
-          },
-        },
-        // 新增选中机票详情卡片组件
-        {
-          id: "flightDetailCard",
-          component: {
-            Card: {
-              title: { literalString: "机票详情" },
-              body: { path: "/flights/selected_detail_text" },
-            },
-          },
-        },
-        // 新增选中机票详情图片组件
-        {
-          id: "flightDetailImage",
-          component: {
-            Image: {
-              src: { path: "/flights/selected_detail_image" },
-              alt: { literalString: "机票详情图片" },
-              width: 320,
-              height: 180,
-            },
-          },
-        },
-      ],
-    },
-  });
-  sseSend(res, {
-    dataModelUpdate: {
-      surfaceId,
-      path: "/weather",
-      contents: [{ key: "temp_text", valueString: "（等待查询）" }],
-    },
-  });
-
-  sseSend(res, {
-    dataModelUpdate: {
-      surfaceId,
-      path: "/flights",
-      contents: [
-        { key: "options", valueJson: [] },
-        { key: "selectedIndex", valueNumber: null },
-        { key: "selected_detail_image", valueString: "" },
-        { key: "selected_detail_text", valueString: "(未选择)" },
-      ],
-    },
-  });
-
-  // 3) begin rendering (v0.8-like)
-  sseSend(res, { beginRendering: { surfaceId, root: "root" } });
+// ====== catalog + bindings ======
+// catalog: web/a2ui.catalog.v0_8.json
+//   { "root": "root", "components": [ ... ] }
+//
+// bindings: web/a2ui.bindings.json（推荐结构）
+// {
+//   "root": "root",
+//   "weather": { "tempText": "/weather/temp_text", "precipText": "/weather/precip_text" },
+//   "flights": {
+//     "options": "/flights/options",
+//     "optionsText": "/flights/options_text",
+//     "selectedIndex": "/flights/selectedIndex",
+//     "detailText": "/flights/selected_detail_text",
+//     "detailImage": "/flights/selected_detail_image"
+//   },
+//   "form": { "query": "/form/query" }
+// }
+function loadCatalog() {
+  const p = path.join(__dirname, "web", "a2ui.catalog.v0_8.json");
+  return JSON.parse(fs.readFileSync(p, "utf-8"));
 }
 
+function loadBindings() {
+  const p = path.join(__dirname, "web", "a2ui.bindings.json");
+  return JSON.parse(fs.readFileSync(p, "utf-8"));
+}
+
+function getRootId(catalog, bindings) {
+  return String(bindings?.root || catalog?.root || "root");
+}
+
+// ====== 业务格式化 ======
 function buildWeatherText(w) {
   const low = Number(w?.temp_c_low);
   const high = Number(w?.temp_c_high);
-
-  // 优先用温度区间
-  if (Number.isFinite(low) && Number.isFinite(high)) {
+  if (Number.isFinite(low) && Number.isFinite(high))
     return `${low} ~ ${high} °C`;
-  }
-
-  // 次选：summary
   if (w?.summary) return String(w.summary);
-
-  // 次选：advice
   if (w?.advice) return String(w.advice);
-
   return "（未返回天气信息）";
 }
 
@@ -310,10 +225,7 @@ function normalizeFlightOptions(rawOptions) {
   const list = Array.isArray(rawOptions) ? rawOptions : [];
   const out = [];
 
-  for (let i = 0; i < list.length; i++) {
-    const o = list[i];
-
-    // 只接受 object，避免 string/markdown 直接进入
+  for (const o of list) {
     if (!o || typeof o !== "object") continue;
 
     const airline = String(
@@ -324,12 +236,10 @@ function normalizeFlightOptions(rawOptions) {
     const notes = cleanNote(o.notes ?? o.note ?? "");
     const image_url = String(o.image_url ?? o.logo_url ?? "").trim();
 
-    // price 允许 number 或字符串数字
-    let price = o.price_cny ?? o.price ?? o.priceCny;
+    let price = o.price_cny ?? o.price ?? o.priceCny ?? o.priceNum;
     if (typeof price === "string") price = price.replace(/[^\d.]/g, "");
     const priceNum = price != null && price !== "" ? Number(price) : null;
 
-    // 如果关键信息全空，就跳过，避免拼出 N/A N/A-N/A
     if (
       !airline &&
       !depart &&
@@ -340,14 +250,7 @@ function normalizeFlightOptions(rawOptions) {
     )
       continue;
 
-    out.push({
-      airline,
-      depart,
-      arrive,
-      priceNum,
-      notes,
-      image_url,
-    });
+    out.push({ airline, depart, arrive, priceNum, notes, image_url });
   }
 
   return out;
@@ -355,117 +258,138 @@ function normalizeFlightOptions(rawOptions) {
 
 function formatOptionDetail(o) {
   if (!o) return "未选择";
+  const price = o.price_cny ?? o.priceNum ?? "";
   const lines = [
     `airline: ${o.airline ?? ""}`,
     `depart: ${o.depart ?? ""}`,
     `arrive: ${o.arrive ?? ""}`,
-    `duration: ${o.duration ?? ""}`,
-    `price_cny: ${o.price_cny ?? ""}`,
+    `price: ${price ?? ""}`,
     `notes: ${o.notes ?? ""}`,
     `image_url: ${o.image_url ?? ""}`,
   ];
   return lines.join("\n");
 }
+
+function buildOptionsText(normalized) {
+  const list = Array.isArray(normalized) ? normalized : [];
+  if (!list.length) return "（暂无选项）";
+
+  return list
+    .map((o, idx) => {
+      const time = [o.depart, o.arrive].filter(Boolean).join("–");
+      const price = o.priceNum != null ? `¥${o.priceNum}` : "";
+      const notes = o.notes ? `（${o.notes}）` : "";
+      return `${idx + 1}. ${[o.airline, time, price]
+        .filter(Boolean)
+        .join(" ")} ${notes}`.trim();
+    })
+    .join("\n");
+}
+
+// ====== A2UI: sendInitialUI ======
+function sendInitialUI(surfaceId, res) {
+  const catalog = loadCatalog();
+  const bindings = loadBindings();
+  const rootId = getRootId(catalog, bindings);
+
+  // 1) UI Catalog
+  sseSend(res, {
+    surfaceUpdate: {
+      surfaceId,
+      components: catalog.components || [],
+    },
+  });
+
+  // 2) 自动初始化：从 catalog 扫描 path
+  const initItems = extractInitFromCatalog(catalog.components || []);
+
+  // 2.1 overrides：用 bindings 指向的关键字段给更友好的默认值
+  const overrides = {};
+  if (bindings?.form?.query) overrides[bindings.form.query] = "";
+  if (bindings?.weather?.tempText)
+    overrides[bindings.weather.tempText] = "（等待查询）";
+  if (bindings?.weather?.precipText)
+    overrides[bindings.weather.precipText] = "";
+  if (bindings?.flights?.optionsText)
+    overrides[bindings.flights.optionsText] = "（等待查询）";
+  if (bindings?.flights?.options) overrides[bindings.flights.options] = [];
+  if (bindings?.flights?.selectedIndex)
+    overrides[bindings.flights.selectedIndex] = -1;
+  if (bindings?.flights?.detailText)
+    overrides[bindings.flights.detailText] = "未选择";
+  if (bindings?.flights?.detailImage)
+    overrides[bindings.flights.detailImage] = "";
+
+  const initUpdates = buildInitUpdates(initItems, { overrides });
+
+  for (const u of initUpdates) {
+    sseSend(res, {
+      dataModelUpdate: {
+        surfaceId,
+        path: u.path,
+        contents: u.contents,
+      },
+    });
+  }
+
+  // 3) begin rendering (strict v0.8-like)
+  sseSend(res, { beginRendering: { surfaceId, root: rootId } });
+}
+
+// ====== A2UI: sendResultUI（完全按 bindings 写入）=====
 function sendResultUI(surfaceId, res, weatherArtifact, flightArtifact) {
-  // ===== 1) /weather =====
+  const bindings = loadBindings();
+
+  // --- weather ---
   const w = weatherArtifact?.data ?? {};
   const tempText = buildWeatherText(w);
 
-  sseSend(res, {
-    dataModelUpdate: {
+  if (bindings?.weather?.tempText)
+    dmWrite(surfaceId, res, bindings.weather.tempText, tempText);
+  if (bindings?.weather?.precipText)
+    dmWrite(
       surfaceId,
-      path: "/weather",
-      contents: [
-        { key: "city", valueString: String(w.city ?? "") },
-        { key: "date", valueString: String(w.date ?? "") },
-        { key: "summary", valueString: String(w.summary ?? "") },
-        { key: "advice", valueString: String(w.advice ?? "") },
+      res,
+      bindings.weather.precipText,
+      w.precip_prob != null ? `${w.precip_prob}%` : ""
+    );
 
-        // 兼容后续更结构化渲染
-        {
-          key: "temp_c_low",
-          valueNumber: Number.isFinite(Number(w.temp_c_low))
-            ? Number(w.temp_c_low)
-            : 0,
-        },
-        {
-          key: "temp_c_high",
-          valueNumber: Number.isFinite(Number(w.temp_c_high))
-            ? Number(w.temp_c_high)
-            : 0,
-        },
-        {
-          key: "precip_prob",
-          valueNumber: Number.isFinite(Number(w.precip_prob))
-            ? Number(w.precip_prob)
-            : 0,
-        },
-
-        // 当前 UI 直接绑定的字段
-        { key: "temp_text", valueString: tempText },
-        {
-          key: "precip_text",
-          valueString: w.precip_prob != null ? `${w.precip_prob}%` : "",
-        },
-      ],
-    },
-  });
-
-  // ===== 2) /flights =====
+  // --- flights ---
   const f = flightArtifact?.data ?? {};
   const normalized = normalizeFlightOptions(f.options);
-  console.log("🚀 ~ sendResultUI ~ normalized:", normalized);
+  const optionsText = buildOptionsText(normalized);
 
-  const optionsText = normalized.length
-    ? normalized
-        .map((o, idx) => {
-          const time = [o.depart, o.arrive].filter(Boolean).join("–");
-          const price = o.priceNum != null ? `¥${o.priceNum}` : "";
-          const notes = o.notes ? `（${o.notes}）` : "";
-          // 让空字段也能合理展示，但不输出 N/A
-          return `${idx + 1}. ${[o.airline, time, price]
-            .filter(Boolean)
-            .join(" ")} ${notes}`.trim();
-        })
-        .join("\n")
-    : "（暂无选项）";
-  const options = Array.isArray(f.options) ? f.options : [];
-  const selectedIndex = options.length ? 0 : -1;
-  const selected = selectedIndex >= 0 ? options[selectedIndex] : null;
-  console.log("🚀 ~ sendResultUI ~ selected:", selected);
-  const img = selected?.image_url || selected?.logo_url || ""; // 没有就空字符串
-  sseSend(res, {
-    dataModelUpdate: {
+  // options：建议写 normalized（用于 Select 展示/详情）
+  if (bindings?.flights?.options)
+    dmWrite(surfaceId, res, bindings.flights.options, normalized);
+
+  // optionsText：用于 Card 快速展示（若 UI 绑定了它）
+  if (bindings?.flights?.optionsText)
+    dmWrite(surfaceId, res, bindings.flights.optionsText, optionsText);
+
+  // selectedIndex / detail
+  const selectedIndex = normalized.length ? 0 : -1;
+  const selected = selectedIndex >= 0 ? normalized[selectedIndex] : null;
+
+  if (bindings?.flights?.selectedIndex)
+    dmWrite(surfaceId, res, bindings.flights.selectedIndex, selectedIndex);
+  if (bindings?.flights?.detailText)
+    dmWrite(
       surfaceId,
-      path: "/flights",
-      contents: [
-        { key: "from", valueString: String(f.from ?? "") },
-        { key: "to", valueString: String(f.to ?? "") },
-        { key: "date", valueString: String(f.date ?? "") },
+      res,
+      bindings.flights.detailText,
+      formatOptionDetail(selected)
+    );
+  if (bindings?.flights?.detailImage)
+    dmWrite(
+      surfaceId,
+      res,
+      bindings.flights.detailImage,
+      selected?.image_url || ""
+    );
 
-        // 原始 options 仍写入（后面要做 List/Repeat 会用到）
-        {
-          key: "options",
-          valueJson: options,
-        },
-        { key: "selectedIndex", valueNumber: selectedIndex },
-        {
-          key: "selected_detail_text",
-          valueString: formatOptionDetail(selected),
-        },
-        {
-          key: "selected_detail_image",
-          valueString: String(img),
-        },
-
-        // 当前 UI 直接绑定的字段（已经清洗过）
-        { key: "options_text", valueString: optionsText },
-
-        // 可选：用于 debug（不绑 UI）
-        { key: "raw", valueString: safeJson(flightArtifact?.data ?? {}) },
-      ],
-    },
-  });
+  // debug：需要的话写一个 raw（前端不绑）
+  // dmWrite(surfaceId, res, "/flights/raw", safeJson(flightArtifact?.data ?? {}));
 }
 
 // ====== 静态前端 ======
@@ -476,15 +400,12 @@ app.get("/ui/stream", (req, res) => {
   const surfaceId = String(req.query.surfaceId || "main");
   setSseHeaders(res);
 
-  // 心跳
   const pingTimer = setInterval(() => res.write(":\n\n"), 15000);
 
-  // 记录连接
   const old = sseBySurface.get(surfaceId);
   if (old?.pingTimer) clearInterval(old.pingTimer);
   sseBySurface.set(surfaceId, { res, pingTimer });
 
-  // 首帧 UI
   sendInitialUI(surfaceId, res);
 
   req.on("close", () => {
@@ -506,59 +427,43 @@ app.post("/ui/event", async (req, res) => {
 
   if (name !== "submit") return res.json({ ok: true });
 
+  const bindings = loadBindings();
+  const queryPath = bindings?.form?.query || "/form/query";
   const query = String(userAction?.context?.query || "");
   if (!query.trim()) return res.status(400).json({ error: "Empty query" });
 
-  // Loading：写到 UI 真实绑定字段
-  sseSend(conn.res, {
-    dataModelUpdate: {
-      surfaceId,
-      path: "/weather",
-      contents: [{ key: "temp_text", valueString: "查询中..." }],
-    },
-  });
-  sseSend(conn.res, {
-    dataModelUpdate: {
-      surfaceId,
-      path: "/flights",
-      contents: [
-        { key: "options", valueJson: [] },
-        { key: "selectedIndex", valueNumber: -1 },
-        { key: "selected_detail_image", valueString: "" },
-        { key: "selected_detail_text", valueString: "查询中..." },
-      ],
-    },
-  });
+  // Loading：写到 bindings 对应字段
+  if (bindings?.weather?.tempText)
+    dmWrite(surfaceId, conn.res, bindings.weather.tempText, "查询中...");
+  if (bindings?.flights?.optionsText)
+    dmWrite(surfaceId, conn.res, bindings.flights.optionsText, "查询中...");
+  if (bindings?.flights?.options)
+    dmWrite(surfaceId, conn.res, bindings.flights.options, []);
+  if (bindings?.flights?.selectedIndex)
+    dmWrite(surfaceId, conn.res, bindings.flights.selectedIndex, -1);
+  if (bindings?.flights?.detailText)
+    dmWrite(surfaceId, conn.res, bindings.flights.detailText, "查询中...");
+  if (bindings?.flights?.detailImage)
+    dmWrite(surfaceId, conn.res, bindings.flights.detailImage, "");
+
+  // 可选：把 query 写回 dataModel（如果你希望 dataModel 始终同步）
+  dmWrite(surfaceId, conn.res, queryPath, query);
 
   try {
-    // 并行 A2A 调用两个子 Agent
     const [weatherArtifact, flightArtifact] = await Promise.all([
       sendSubscribe(WEATHER_AGENT_URL, { query }),
       sendSubscribe(FLIGHT_AGENT_URL, { query }),
     ]);
 
-    // 聚合 → A2UI dataModel 更新
     sendResultUI(surfaceId, conn.res, weatherArtifact, flightArtifact);
-
     return res.json({ ok: true });
   } catch (e) {
     const msg = `ERROR: ${String(e?.message || e)}`;
 
-    // Error：同样写到 UI 真实绑定字段（不再 patch）
-    sseSend(conn.res, {
-      dataModelUpdate: {
-        surfaceId,
-        path: "/weather",
-        contents: [{ key: "temp_text", valueString: msg }],
-      },
-    });
-    sseSend(conn.res, {
-      dataModelUpdate: {
-        surfaceId,
-        path: "/flights",
-        contents: [{ key: "options_text", valueString: msg }],
-      },
-    });
+    if (bindings?.weather?.tempText)
+      dmWrite(surfaceId, conn.res, bindings.weather.tempText, msg);
+    if (bindings?.flights?.optionsText)
+      dmWrite(surfaceId, conn.res, bindings.flights.optionsText, msg);
 
     return res.status(500).json({ error: msg });
   }
